@@ -1,0 +1,24 @@
+# Python 缓存与字节码
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 环境与虚拟环境
+.env
+.venv/
+venv/
+env/
+
+# IDE 与编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 操作系统垃圾
+.DS_Store
+Thumbs.db
+
+# 对局运行产物（默认不入库，示例样本除外）
+juban/
+*.log
