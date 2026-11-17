@@ -128,7 +128,7 @@ subagent(
   匿名互评的实验一致显示，评委只要看见角色名就会偏袒。
   **`--blind` 只是账本标记，不遮蔽署名**——真要盲读，用 `brief` 导出匿名视图：
   `python3 "$SK/scripts/arena.py" brief --dir ./juban [--round N] [--out ./盲读.txt]`，
-  它抹掉真名、自报要害与比分，只留「席位 A/B」和正文（标题也换成中性，避免泄底）。
+  它抹掉真名（含正文里自称/提及的角色名，一律换成席位牌）、自报要害与比分，只留「席位 A/B」和脱敏后的正文（标题也换成中性，避免泄底）。
   正确顺序：`brief` 导出 → 读匿名稿判分 → 回账本 `turn --blind` 记分归属。
 - **只打要害**：裁判攻击的点必须是对方自报要害之内；要害之外的角色可以不接，不许另立靶子。
 - **换序**：相邻两回合不要让同一方连续受益；出现连续三回合同一方赢，回头复核是否位置偏置。
@@ -176,7 +176,7 @@ python3 "$SK/scripts/arena.py" render --dir ./juban --html
 
 ```
 SK=~/.dsh/skills/lundao-arena
-python3 "$SK/tests/test_arena.py"        # 验证门：48 项，含真实对局回放、阵营局、提前终局、盲判视图、证据门
+python3 "$SK/tests/test_arena.py"        # 验证门：51 项，含真实对局回放、阵营局、提前终局、盲判视图、证据门、正文脱敏、KO 门锚定
 python3 "$SK/scripts/arena.py" check --dir ./juban     # 局未打完会报缺回合，这是对的
 ```
 `check` 会**拦**（exit 2，不是提示）：重复记录、空发言、未知角色计分、缺回合、

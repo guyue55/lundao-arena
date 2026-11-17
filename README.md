@@ -4,7 +4,7 @@
 > 最后留下能当文章读的实录。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-41%20passed-brightgreen.svg)](tests/test_arena.py)
+[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen.svg)](tests/test_arena.py)
 [![Python 3](https://img.shields.io/badge/python-3.x-blue.svg)](scripts/arena.py)
 
 仓库地址：<https://github.com/guyue55/lundao-arena>
@@ -106,7 +106,7 @@ MT-Bench 亦记录同类现象）：
 python3 scripts/arena.py brief --dir ./juban [--round N] [--out ./盲读.txt]
 ```
 
-它抹掉真名、自报要害、比分和含真名的标题，只留「席位 A/B」和正文。正确顺序是
+它抹掉真名（连正文里自称/提及的角色名也换成席位牌）、自报要害、比分和含真名的标题，只留「席位 A/B」和脱敏后的正文。正确顺序是
 `brief` 导出 → 读匿名稿判分 → 回账本 `turn --blind` 记分归属。
 这不是多余的谨慎：EMNLP 2026 Findings 的实验显示，自我增强偏置在盲评下会消失——
 反过来说明只要看得见署名，偏置就在。**文献把盲判从「好习惯」升级成了「有效手段」，工具则负责让它真的盲。**
@@ -140,7 +140,8 @@ python3 scripts/arena.py brief --dir ./juban [--round N] [--out ./盲读.txt]
 
 写法 `turn ... --evidence verified`（也认中文「已核/推理/待核/存疑」）。
 **KO 证据门**：击穿是终局手段，宣布击穿那一发若没标证据、或标「存疑/待核」，`check` 默认提示，
-加 `--strict-evidence` 升为硬错误。这把「击穿不是打出来的，是立出来的」再收紧一步——
+加 `--strict-evidence` 升为硬错误。门只认**真正生效的那一发终局击穿**（按 `result.round`/`result.loser` 精确定位，
+不认账本里别的 KO 发言），所以旁证标得再干净也盖不住生效那一发的编派。这把「击穿不是打出来的，是立出来的」再收紧一步——
 天道局方士把「盗跖寿终」编成「无一夕贴席」被当场拆穿，正是这条门要拦的东西。
 
 ### 终局不比总分，比「他们是否在争同一个问题」
@@ -213,7 +214,7 @@ references/
   judging.md             # 裁判尺与三种偏置的防法
 scripts/arena.py         # 记账 / 体检 / 出档（纯标准库，无依赖）
 templates/spec.json      # 建局模板
-tests/                   # 验证门：41 项，含一场真实对局的回放
+tests/                   # 验证门：51 项，含一场真实对局的回放
 examples/zhouyu-zhuge/   # 真实产物：周瑜 vs 诸葛亮第 4–10 回合实录（截断样本，legacy 档）
 ```
 
@@ -225,7 +226,7 @@ examples/zhouyu-zhuge/   # 真实产物：周瑜 vs 诸葛亮第 4–10 回合�
 
 ```
 $ python3 tests/test_arena.py
-Ran 48 tests — OK
+Ran 51 tests — OK
 ```
 
 四十八项里，最关键的仍不是「函数返回 True」，是**回放**：把一场真打过的七回合论道按真实打法

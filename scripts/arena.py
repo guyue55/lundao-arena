@@ -713,10 +713,28 @@ def cmd_brief(args):
             die(f"第 {args.round} 回合没有记录")
     turns = sorted(turns, key=lambda t: (t["round"], ids.index(t["speaker"])))
 
+    # 正文里也可能出现真名（「与诸葛亮、张飞…」），照样要换成席位牌，
+    # 否则裁判读正文就能把席位映射还原，盲读形同虚设。
+    # 两阶段占位符替换：先把每个真名换成不可能自然出现的占位符，再统一换成席位，
+    # 避免「同名互替」的链式误伤（A 的名字换成含 B 名字的串后又被 B 再换一次）。
+    name_to_seat = {r["name"]: f"席位{seats[r['id']]}"
+                    for r in data["roles"] if r.get("name")}
+
+    def anonymize(text: str) -> str:
+        holders = {}
+        for i, nm in enumerate(sorted((n for n in name_to_seat if n), key=len, reverse=True)):
+            ph = f"\x00SEAT{i}\x00"
+            text = text.replace(nm, ph)
+            holders[ph] = name_to_seat[nm]
+        for ph, val in holders.items():
+            text = text.replace(ph, val)
+        return text
+
     # 标题往往含真名（如「周瑜 vs 诸葛亮」），盲读视图一律用中性标题，杜绝泄底。
     L = ["# 匿名判分视图", ""]
     L.append(f"> 共 {len(turns)} 条发言 · {data['mode']} · {data['ruleset']}。")
-    L.append("> 席位牌按座次顺序分配（A/B/C…），与角色 id 一一对应但不显示对应关系。")
+    L.append("> 席位牌按座次顺序分配（A/B/C…），与角色 id 一一对应但不显示对应关系。"
+             "正文里出现的角色真名也已换成席位牌。")
     L.append("> 本视图刻意不含自报要害、比分与裁决，避免先入为主；判完分再回账本核名。")
     L.append("")
     last_round = None
@@ -727,7 +745,7 @@ def cmd_brief(args):
             last_round = t["round"]
         L.append(f"### 席位 {seats.get(t['speaker'], '?')}")
         L.append("")
-        L.append((t.get("text") or "").strip())
+        L.append(anonymize((t.get("text") or "").strip()))
         L.append("")
     out = "\n".join(L) + "\n"
 
@@ -901,10 +919,28 @@ def cmd_check(args):
             # KO 证据门：击穿是「主张还挂着，人已站不住」，必须落在可核对的证据上。
             # 靠编派（speculative）或干脆不标证据打出来的 KO，正是天道局方士那种
             # 「硬圆被拆穿」的翻版。默认提示，--strict-evidence 才升为错误。
-            ko_turns = [t for t in data["turns"] if (t.get("ko") or "").strip()]
-            ko_ev = ko_turns[0].get("evidence", "") if ko_turns else ""
+            #
+            # 关键：必须锚定「真正生效的那一记终局 KO」，而不是取全局第一条带 ko 的
+            # 发言（旧实现的致命伤）。按 result 的回合 + 输家精确定位：ko 指向 loser、
+            # 且发言者不是 loser 本身。这样旁 KO / 旧 KO / 手改账本都骗不过严格门，
+            # 也不会再拿旁 KO 的证据去张冠李戴地误报终局回合。
+            ko_candidates = [
+                t for t in data["turns"]
+                if int(t["round"]) == end_round
+                and (t.get("ko") or "").strip() == loser
+                and t.get("speaker") != loser
+            ]
+            ko_ev = ""
+            if ko_candidates:
+                # 同回合若有多条都指向 loser，取最后写入的那条（即真正落定为终局的）
+                eff = max(ko_candidates, key=lambda t: t.get("at", ""))
+                ko_ev = eff.get("evidence", "")
             ko_msg = None
-            if not ko_ev:
+            if not ko_candidates:
+                ko_msg = (f"第 {end_round} 回合判了击穿，但账上找不到指向 "
+                          f"{name.get(loser, loser)} 的那记 KO——终局记录与实际 KO "
+                          f"发言对不上（可能手改过账本），无法核实击穿证据")
+            elif not ko_ev:
                 ko_msg = (f"第 {end_round} 回合判了击穿，宣布击穿的那一发却没标证据等级"
                           f"（--evidence）——击穿必须落在可核对的证据上")
             elif ko_ev == "speculative":

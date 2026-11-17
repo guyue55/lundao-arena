@@ -790,6 +790,63 @@ class V11BlindEvidence(unittest.TestCase):
             "--ko", "B", "--evidence", "verified")
         self.assertEqual(run("check", "--dir", self.dir, "--strict-evidence").returncode, 0)
 
+    def _install_ledger(self, turns_spec, loser, end_round):
+        """手工装一份账：turns_spec=[(round, speaker, ko, evidence, at), ...]。
+        用于精确构造多 KO 场景——CLI 状态机下难以稳定复现。"""
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        path = os.path.join(self.dir, "arena.json")
+        d = json.loads(_read(path))
+        turns = []
+        for rnd, spk, ko, ev, at in turns_spec:
+            turns.append({"round": rnd, "speaker": spk, "text": "论辩正文。",
+                          "score": {}, "verdict": "", "note": "", "pivot": "要害在此。",
+                          "rubric": {}, "evidence": ev, "blind": True, "concede": "",
+                          "ko": ko, "at": at})
+        d["turns"] = turns
+        d["result"] = {"round": end_round, "loser": loser, "winner": None,
+                       "reason": "ko", "label": "要害被击穿", "note": ""}
+        d["status"] = "finished"
+        _dump(d, path)
+
+    def test_brief_anonymizes_real_names_inside_body(self):
+        """回归：正文里自称/提及真名时，brief 必须也换成席位牌，否则盲读被还原。"""
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        r = run("turn", "--dir", self.dir, "--round", "1", "--speaker", "A",
+                "--text", "周瑜亲率轻骑，与诸葛亮、张飞会于江夏；诸葛亮设伏。",
+                "--score", "A:2,B:1", "--pivot", "要害。")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = run("brief", "--dir", self.dir)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("席位 A", out.stdout)
+        self.assertNotIn("周瑜", out.stdout, "正文真名『周瑜』泄漏到盲读视图")
+        self.assertNotIn("诸葛亮", out.stdout, "正文真名『诸葛亮』泄漏到盲读视图")
+
+    def test_ko_gate_false_negative_multiple_ko(self):
+        """回归（假阴性）：旁 KO 是 verified、生效终局 KO 却是 speculative 时，
+        严格门必须拦——旧实现取 ko_turns[0] 会误放行。"""
+        self._install_ledger(
+            [(1, "A", "B", "verified", "2026-01-01T00:00:01+08:00"),
+             (1, "B", "A", "speculative", "2026-01-01T00:00:02+08:00")],
+            loser="A", end_round=1)
+        r = run("check", "--dir", self.dir, "--strict-evidence")
+        self.assertEqual(r.returncode, 2,
+                         f"生效 KO 是编派却放行（假阴性）：{r.stdout}{r.stderr}")
+        self.assertIn("存疑", r.stderr)
+
+    def test_ko_gate_no_false_positive_wrong_round(self):
+        """回归（假阳性）：旁 KO 是 speculative、生效终局 KO 是 verified 时，
+        应放行，且不拿旁 KO 的证据张冠李戴报在终局回合上。"""
+        self._install_ledger(
+            [(1, "A", "B", "speculative", "2026-01-01T00:00:01+08:00"),
+             (3, "B", "A", "verified", "2026-01-01T00:00:03+08:00")],
+            loser="A", end_round=3)
+        r = run("check", "--dir", self.dir, "--strict-evidence", "--partial")
+        self.assertEqual(r.returncode, 0,
+                         f"生效 KO 已核实却被误报（假阳性）：{r.stdout}{r.stderr}")
+        self.assertNotIn("存疑", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
