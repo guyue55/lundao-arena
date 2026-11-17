@@ -35,7 +35,7 @@
 | [ClawHub roundtable-skills](https://clawhub.ai/lmf112358/skills/roundtable-skills) | 多 agent 对抗性思考，出共识／分歧／行动指南 | 委员会派 |
 | [ClawHub multi-viewpoint-debates](https://clawhub.ai/latentfreedom/skills/multi-viewpoint-debates) | 隔离 subagent 扮演世界观，出综述 | 委员会派 |
 | [salismt/multi-agent-debate](https://github.com/salismt/multi-agent-debate) | 对立 persona + 证据引用裁判 + chain-of-verification | 委员会派 |
-| [zhjai/agent-arena](https://github.com/zhjai/agent-arena) | 「Evidence-first multi-agent debate」：独立提案→交叉评审→修订→综合，`使用 arena 讨论 X` 一句话触发，`继续` 断点续跑 | **最强直接竞品**。它的 run state（armed/in_progress/complete/abandoned/superseded）比论道台的 running/finished 细，值得抄；但它不收比分、不判胜负 |
+| [zhjai/agent-arena](https://github.com/zhjai/agent-arena) | 「Evidence-first multi-agent debate」：独立提案→交叉评审→修订→综合，`使用 arena 讨论 X` 触发，`继续` 断点续跑 | **最强直接竞品**。它的 run state（armed/in_progress/complete/abandoned/superseded）比论道台的 running/finished 细，值得抄。注意：它也做 `blind judge scores` 与 rubric 判分、并会点名胜负（v1.1.0 核验更正，旧版曾误写「不收比分、不判胜负」）；两者的差别在论道台是逐回合赛事化计分 + 认输/击穿终局，它是一次性评审出综合稿 |
 | [ClawHub xiaoba-dev/debate](https://clawhub.ai/xiaoba-dev/skills/debate) | cross-vendor adversarial review：把 brief 原样发给**别家厂商**的模型互评 | 它明说「一个模型演多个专家不算这个 skill」——**这一句戳中论道台最该讲清楚的边界** |
 | [ClawHub moot-court-ai](https://clawhub.ai/baobaodawang-creater/skills/moot-court-ai) | 书记员/原告/被告/法官四角色模拟法庭，用确定性 Lobster workflow 控阶段 | 学它的「阶段推进不交给模型」；论道台的阶段推进在 CLI 里，同理 |
 | [wan-huiyan/agent-review-panel](https://github.com/wan-huiyan/agent-review-panel) | 多评审面板 + `docs/demo.tape`、`record-demo.sh` 把演示录制脚本一起入库 | 手艺范本：showcase 要能一键复现，不是截一张图 |
@@ -100,6 +100,17 @@ MT-Bench 亦记录同类现象）：
 盲判不是可选项，而且**没有「默认开启」**——CLI 不替你决定，匿名互评的实验一致显示，评委只要看见角色名就会偏袒——
 这一条在 `council-review` 里是硬规矩，这里照搬。
 
+注意 `--blind` 只是账本上的标记，**它不会自动遮蔽署名**。要真正盲读，用 `brief` 导出匿名视图：
+
+```bash
+python3 scripts/arena.py brief --dir ./juban [--round N] [--out ./盲读.txt]
+```
+
+它抹掉真名、自报要害、比分和含真名的标题，只留「席位 A/B」和正文。正确顺序是
+`brief` 导出 → 读匿名稿判分 → 回账本 `turn --blind` 记分归属。
+这不是多余的谨慎：EMNLP 2026 Findings 的实验显示，自我增强偏置在盲评下会消失——
+反过来说明只要看得见署名，偏置就在。**文献把盲判从「好习惯」升级成了「有效手段」，工具则负责让它真的盲。**
+
 ### 终局：认输或击穿即止，不必打满
 
 `rounds_total` 是赛程上限，不是必须交满的作业。一局三种结束法：
@@ -117,6 +128,20 @@ MT-Bench 亦记录同类现象）：
 
 `historical` / `truthseeking` 局：凡「某某说过」必须指到出处，指不到本回合扣到 0 分，并在实录里
 标注「此处引文有误」。这条最容易被跳过，也最影响可信度——实录里一旦掺进编造的史实，整场就废了。
+
+光靠裁判「记得核」仍会漏。所以每条发言可挂一个证据等级，出档时亮牌（借鉴 `xiaoba-dev/debate`）：
+
+| 标签 | 含义 | 判分 |
+|---|---|---|
+| `[已核] verified` | 指得到出处 / 可运行命令 / 可引用数据 | 全额采信 |
+| `[推理] reasoned` | 从已核事实推出，链条可复核 | 采信，标出推理链 |
+| `[待核] to-verify` | 声称有据但当场没核 | 打折采信，注明待核 |
+| `[存疑] speculative` | 无出处、或已被对方拆穿的硬圆 | 不采信，立论方扣分 |
+
+写法 `turn ... --evidence verified`（也认中文「已核/推理/待核/存疑」）。
+**KO 证据门**：击穿是终局手段，宣布击穿那一发若没标证据、或标「存疑/待核」，`check` 默认提示，
+加 `--strict-evidence` 升为硬错误。这把「击穿不是打出来的，是立出来的」再收紧一步——
+天道局方士把「盗跖寿终」编成「无一夕贴席」被当场拆穿，正是这条门要拦的东西。
 
 ### 终局不比总分，比「他们是否在争同一个问题」
 
@@ -162,7 +187,8 @@ printf '第一回合的发言正文。\n' > ./r1.txt        # 发言先落成文
 python3 "$SK/scripts/arena.py" turn   --dir ./juban --round 1 --speaker A \
         --text-file ./r1.txt --score "A:2,B:1" --verdict "A 打中 X，B 未接" \
         --rubric "A:接2,据2,洽2,认1;B:接1,据1,洽2,认2" \
-        --pivot "若你能指出…，我认。" --blind
+        --pivot "若你能指出…，我认。" --evidence verified --blind
+python3 "$SK/scripts/arena.py" brief  --dir ./juban --out ./盲读.txt     # 盲判：导出无署名稿，判完分再归属
 python3 "$SK/scripts/arena.py" status --dir ./juban
 python3 "$SK/scripts/arena.py" check  --dir ./juban
 printf '两人争的不是一件事……\n' > ./verdict.txt                                    # 终局裁决
@@ -199,10 +225,10 @@ examples/zhouyu-zhuge/   # 真实产物：周瑜 vs 诸葛亮第 4–10 回合�
 
 ```
 $ python3 tests/test_arena.py
-Ran 41 tests — OK
+Ran 48 tests — OK
 ```
 
-四十一项里，最关键的仍不是「函数返回 True」，是**回放**：把一场真打过的七回合论道按真实打法
+四十八项里，最关键的仍不是「函数返回 True」，是**回放**：把一场真打过的七回合论道按真实打法
 （一回合只有一方发言、双方同时计分）记进账，再出档，逐字比对正文有没有丢。这项曾经挂过——
 最初的体检把「一回合只有一方发言」当成错误，那是把「论道」误当成「双方各交一份作业」。
 
@@ -210,9 +236,11 @@ Ran 41 tests — OK
 提前终局被误判成缺回合、认输记在对手回合、击穿打了稻草人、重记终局那一回合后旧终局不失效、
 2:0 与 1:1 被误判成「分值合计不符」、四维评分与比分相反、自报要害缺失、坏配置被放行。
 
-另有一组**硬门**测试（12 项）：文档里写「必须」的，脚本必须真的拦——缺自报要害、`rubric4` 有分没四维、
-盲判不足一半、同一回合重复记账，四条都 `exit 2`；豁免只有 `--legacy`、`--allow-missing`、`--partial`
-三个显式开关，且 `--partial` 只放行「缺回合」这一项。
+另有一组**硬门**测试：文档里写「必须」的，脚本必须真的拦——缺自报要害、`rubric4` 有分没四维、
+盲判不足一半、同一回合重复记账，都 `exit 2`；豁免只有 `--legacy`、`--allow-missing`、`--partial`、
+`--strict-evidence` 四个显式开关，且 `--partial` 只放行「缺回合」这一项。
+v1.1.0 新增七项测盲判视图（`brief` 不泄真名/要害、round 过滤、out 落盘）与证据标签
+（四档渲染、非法值被拒、KO 无证据/存疑时 `--strict-evidence` 拦、有据时放行）。
 还有一条专测「不撒谎」：终局没写裁决时，实录只能说「未填写」，**不许**按总分替你宣布「本局占胜」。
 
 ---

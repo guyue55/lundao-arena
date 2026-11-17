@@ -684,5 +684,112 @@ class ReviewFixes(unittest.TestCase):
         self.assertEqual(html.count("三营相持"), 1, "裁决在 html 里也只该出现一次")
 
 
+class V11BlindEvidence(unittest.TestCase):
+    """v1.1.0：盲判工具化（brief）+ 证据标签层（--evidence / KO 证据门）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="arena-v11-")
+        self.dir = os.path.join(self.tmp, "game")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _build(self):
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        for i, (spk, sc) in enumerate([("A", "A:2,B:1"), ("B", "A:1,B:2")], 1):
+            r = run("turn", "--dir", self.dir, "--round", str(i), "--speaker", spk,
+                    "--text", f"第{i}回合，署名 {spk} 的正文。", "--score", sc,
+                    "--pivot", f"我的要害{i}。", "--evidence", "verified")
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_brief_hides_real_names_and_verdicts(self):
+        self._build()
+        r = run("brief", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("席位 A", r.stdout)
+        self.assertIn("席位 B", r.stdout)
+        # 真名（周瑜/诸葛亮，fixture 里 A/B 的 name）与要害都不该出现在盲读视图
+        body = json.loads(_read(os.path.join(self.dir, "arena.json")))
+        real_names = {role["name"] for role in body["roles"]}
+        for nm in real_names:
+            self.assertNotIn(nm, r.stdout, f"盲读视图漏出了真名 {nm}")
+        self.assertNotIn("我的要害", r.stdout, "自报要害会泄底，不该出现在盲读视图")
+
+    def test_brief_respects_round_filter_and_out(self):
+        self._build()
+        out = os.path.join(self.tmp, "brief.txt")
+        r = run("brief", "--dir", self.dir, "--round", "2", "--out", out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = _read(out)
+        self.assertIn("第 2 回合", body)
+        self.assertNotIn("第 1 回合", body)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "brief.txt")))
+
+    def test_evidence_recorded_and_rendered(self):
+        self._build()
+        body = json.loads(_read(os.path.join(self.dir, "arena.json")))
+        self.assertEqual(body["turns"][0]["evidence"], "verified")
+        self.assertEqual(run("render", "--dir", self.dir).returncode, 0)
+        md = _read(os.path.join(self.dir, "论道实录.md"))
+        self.assertIn("[已核]", md)
+        self.assertEqual(run("render", "--dir", self.dir, "--html").returncode, 0)
+        self.assertIn("已核", _read(os.path.join(self.dir, "论道实录.html")))
+
+    def test_bad_evidence_rejected(self):
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        r = run("turn", "--dir", self.dir, "--round", "1", "--speaker", "A",
+                "--text", "正文。", "--evidence", "胡编")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--evidence", r.stderr)
+
+    def test_ko_without_evidence_strict_blocks_default_warns(self):
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        run("turn", "--dir", self.dir, "--round", "1", "--speaker", "A",
+            "--text", "先手。", "--score", "A:2,B:1", "--pivot", "要害。")
+        run("turn", "--dir", self.dir, "--round", "2", "--speaker", "B",
+            "--text", "接招。", "--score", "A:1,B:2", "--pivot", "要害。")
+        r = run("turn", "--dir", self.dir, "--round", "3", "--speaker", "A",
+                "--text", "击穿。", "--score", "A:3,B:0", "--pivot", "要害。", "--ko", "B")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 默认只提示，不拦
+        r = run("check", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("没标证据等级", r.stdout + r.stderr)
+        # 显式严格门才拦
+        r = run("check", "--dir", self.dir, "--strict-evidence")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("没标证据等级", r.stderr)
+
+    def test_ko_on_speculative_evidence_strict_blocks(self):
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        run("turn", "--dir", self.dir, "--round", "1", "--speaker", "A",
+            "--text", "先手。", "--score", "A:2,B:1", "--pivot", "要害。")
+        run("turn", "--dir", self.dir, "--round", "2", "--speaker", "B",
+            "--text", "接招。", "--score", "A:1,B:2", "--pivot", "要害。")
+        run("turn", "--dir", self.dir, "--round", "3", "--speaker", "A",
+            "--text", "击穿。", "--score", "A:3,B:0", "--pivot", "要害。",
+            "--ko", "B", "--evidence", "speculative")
+        r = run("check", "--dir", self.dir, "--strict-evidence")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("存疑", r.stderr)
+
+    def test_ko_on_verified_evidence_passes_strict(self):
+        self.assertEqual(run("init", "--spec", os.path.join(FIX, "spec.json"),
+                             "--dir", self.dir).returncode, 0)
+        run("turn", "--dir", self.dir, "--round", "1", "--speaker", "A",
+            "--text", "先手。", "--score", "A:2,B:1", "--pivot", "要害。",
+            "--evidence", "verified")
+        run("turn", "--dir", self.dir, "--round", "2", "--speaker", "B",
+            "--text", "接招。", "--score", "A:1,B:2", "--pivot", "要害。")
+        run("turn", "--dir", self.dir, "--round", "3", "--speaker", "A",
+            "--text", "击穿。", "--score", "A:3,B:0", "--pivot", "要害。",
+            "--ko", "B", "--evidence", "verified")
+        self.assertEqual(run("check", "--dir", self.dir, "--strict-evidence").returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

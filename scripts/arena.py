@@ -11,8 +11,9 @@
   python3 arena.py turn   --dir <对局目录> --round 3 --speaker A --text-file 3a.txt \
                           --score A:2,B:1 --verdict "A占上风" [--note "..."]
   python3 arena.py status --dir <对局目录>
+  python3 arena.py brief  --dir <对局目录> [--round N] [--out 文件]
   python3 arena.py render --dir <对局目录> [--html]
-  python3 arena.py check  --dir <对局目录>
+  python3 arena.py check  --dir <对局目录> [--strict-evidence]
 
 对局文件：<对局目录>/arena.json（唯一真相源，可断点续跑）
 """
@@ -28,6 +29,33 @@ from datetime import datetime, timezone
 STATE = "arena.json"
 VALID_MODES = ("duel", "roundtable", "camp")
 VALID_RULESETS = ("historical", "adversarial", "truthseeking", "persuasion", "creative")
+
+# 证据标签（借鉴 xiaoba-dev/debate 的 [verified]/[reasoned]/[to-verify]，
+# 再加一档「存疑」用来收编硬圆被拆穿的派）。出档时挂在发言后面。
+EVIDENCE_LEVELS = ("verified", "reasoned", "to-verify", "speculative")
+EVIDENCE_LABELS = {
+    "verified": "已核", "reasoned": "推理", "to-verify": "待核", "speculative": "存疑",
+}
+EVIDENCE_ALIASES = {
+    "v": "verified", "verified": "verified", "已核": "verified", "核实": "verified",
+    "r": "reasoned", "reasoned": "reasoned", "推理": "reasoned", "推论": "reasoned",
+    "t": "to-verify", "to-verify": "to-verify", "待核": "to-verify", "未核": "to-verify",
+    "s": "speculative", "speculative": "speculative", "存疑": "speculative", "编派": "speculative",
+}
+
+# 匿名席位牌：brief 视图用，绝不让真名漏出去。
+SEAT_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def norm_evidence(value: str) -> str:
+    """把 --evidence 的各种写法收敛到四档；空串返回空串（不强制打标）。"""
+    v = (value or "").strip().strip("[]").strip()
+    if not v:
+        return ""
+    key = v.lower()
+    if key not in EVIDENCE_ALIASES:
+        die(f"--evidence 只认 {list(EVIDENCE_LEVELS)}（或对应中文），收到 {value!r}")
+    return EVIDENCE_ALIASES[key]
 
 
 # ---------------------------------------------------------------- 基础读写
@@ -295,6 +323,7 @@ def cmd_turn(args):
     score = parse_score(args.score or "", ids)
     rubric = parse_rubric(getattr(args, "rubric", "") or "", ids)
     pivot = (getattr(args, "pivot", "") or "").strip()
+    evidence = norm_evidence(getattr(args, "evidence", "") or "")
     concedes = (getattr(args, "concede", "") or "").strip()
     ko = (getattr(args, "ko", "") or "").strip()
     if concedes and ko:
@@ -341,6 +370,7 @@ def cmd_turn(args):
         "note": args.note or "",
         "pivot": pivot,
         "rubric": rubric,
+        "evidence": evidence,
         "blind": bool(getattr(args, "blind", False)),
         "concede": concedes,
         "ko": ko,
@@ -470,6 +500,9 @@ def render_md(data: dict) -> str:
         mark = "（盲判）" if turn.get("blind") else ""
         L.append(f"### 第 {turn['round']} 回合 · {name.get(rid, rid)}{mark}\n")
         L.append(turn["text"].strip() + "\n")
+        if turn.get("evidence"):
+            L.append(f"\n证据：[{EVIDENCE_LABELS.get(turn['evidence'], turn['evidence'])}]"
+                     f"（{turn['evidence']}）\n")
         if turn.get("pivot"):
             L.append(f"\n> **自报要害**：{turn['pivot']}\n")
         if turn.get("verdict"):
@@ -605,6 +638,10 @@ def render_html(data: dict) -> str:
         for para in turn["text"].strip().split("\n\n"):
             if para.strip():
                 parts.append(f"<p>{e(para.strip())}</p>")
+        if turn.get("evidence"):
+            parts.append(f"<div class='judge'><b>证据</b>：["
+                         f"{e(EVIDENCE_LABELS.get(turn['evidence'], turn['evidence']))}]"
+                         f"（{e(turn['evidence'])}）</div>")
         if turn.get("pivot"):
             parts.append(f"<div class='judge'><b>自报要害</b>：{e(turn['pivot'])}</div>")
         if turn.get("verdict"):
@@ -658,6 +695,53 @@ def render_html(data: dict) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------- brief（匿名判分视图）
+
+def cmd_brief(args):
+    """导出匿名判分视图：抹掉角色真名、只留席位牌，供裁判盲读。
+
+    --blind 只是账本上的标记，不遮蔽署名；这个函数才是真正把名字拿掉的工具。
+    固定按「回合 + 席位牌」排序，不透露 speaker id，也不打印 pivot/裁决（那些会泄底）。
+    """
+    data = load(args.dir)
+    ids = [r["id"] for r in data["roles"]]
+    seats = {rid: SEAT_LABELS[i] for i, rid in enumerate(ids)}
+    turns = data.get("turns", [])
+    if args.round is not None:
+        turns = [t for t in turns if int(t["round"]) == int(args.round)]
+        if not turns:
+            die(f"第 {args.round} 回合没有记录")
+    turns = sorted(turns, key=lambda t: (t["round"], ids.index(t["speaker"])))
+
+    # 标题往往含真名（如「周瑜 vs 诸葛亮」），盲读视图一律用中性标题，杜绝泄底。
+    L = ["# 匿名判分视图", ""]
+    L.append(f"> 共 {len(turns)} 条发言 · {data['mode']} · {data['ruleset']}。")
+    L.append("> 席位牌按座次顺序分配（A/B/C…），与角色 id 一一对应但不显示对应关系。")
+    L.append("> 本视图刻意不含自报要害、比分与裁决，避免先入为主；判完分再回账本核名。")
+    L.append("")
+    last_round = None
+    for t in turns:
+        if t["round"] != last_round:
+            L.append(f"## 第 {t['round']} 回合")
+            L.append("")
+            last_round = t["round"]
+        L.append(f"### 席位 {seats.get(t['speaker'], '?')}")
+        L.append("")
+        L.append((t.get("text") or "").strip())
+        L.append("")
+    out = "\n".join(L) + "\n"
+
+    if args.out:
+        parent = os.path.dirname(os.path.abspath(args.out))
+        if parent and not os.path.isdir(parent):
+            die(f"输出目录不存在：{parent}")
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(out)
+        print(f"[arena] 匿名视图已写入 {args.out}（{len(turns)} 条，{len(out)} 字）")
+    else:
+        sys.stdout.write(out)
+
+
 # ---------------------------------------------------------------- check
 
 def cmd_conclude(args):
@@ -687,6 +771,9 @@ def cmd_check(args):
     # 或者体检时显式加 --legacy；--allow-missing 则是明知缺项仍要出档。
     legacy = bool(data.get("legacy")) or getattr(args, "legacy", False)
     strict = not legacy and not getattr(args, "allow_missing", False)
+    # 证据门单独一档：默认只提示；显式 --strict-evidence 才拦。
+    # 注意显式开关压过 legacy —— 用户既然点名要严格证据门，就不能被旧档标记悄悄豁免。
+    strict_ev = bool(getattr(args, "strict_evidence", False))
 
     def gate(msg):
         (errors if strict else warnings).append(("旧档·" if legacy else "") + msg)
@@ -811,6 +898,23 @@ def cmd_check(args):
                 warnings.append(f"第 {end_round} 回合判了击穿要害，但 "
                                 f"{name.get(loser, loser)} 全程没自报过要害——"
                                 f"被击穿的不是要害，是稻草人（或他根本没给靶子）")
+            # KO 证据门：击穿是「主张还挂着，人已站不住」，必须落在可核对的证据上。
+            # 靠编派（speculative）或干脆不标证据打出来的 KO，正是天道局方士那种
+            # 「硬圆被拆穿」的翻版。默认提示，--strict-evidence 才升为错误。
+            ko_turns = [t for t in data["turns"] if (t.get("ko") or "").strip()]
+            ko_ev = ko_turns[0].get("evidence", "") if ko_turns else ""
+            ko_msg = None
+            if not ko_ev:
+                ko_msg = (f"第 {end_round} 回合判了击穿，宣布击穿的那一发却没标证据等级"
+                          f"（--evidence）——击穿必须落在可核对的证据上")
+            elif ko_ev == "speculative":
+                ko_msg = (f"第 {end_round} 回合的击穿建立在「存疑」证据上——"
+                          f"用编派打出来的击穿不算数，换可核对的凭据")
+            elif ko_ev == "to-verify":
+                ko_msg = (f"第 {end_round} 回合的击穿证据仍「待核」——"
+                          f"核实前别急着宣布要害被击穿")
+            if ko_msg:
+                (errors if strict_ev else warnings).append(ko_msg)
     missing = [r for r in range(1, end_round + 1) if r not in covered]
     if missing and not args.partial:
         errors.append(f"未打完的回合：{missing}（截断样本请加 --partial）")
@@ -844,8 +948,8 @@ def cmd_check(args):
         else:
             streak_who, streak = None, 0
     if best[1] >= 3:
-        warnings.append(f"提前终止建议：{name.get(best[0], best[0])} 已连续 {best[1]} 回合 2:0，"
-                        f"可提前收局并在裁决里写明理由")
+        warnings.append(f"提前终止建议：{name.get(best[0], best[0])} 已连续 {best[1]} 回合压制"
+                        f"（净胜 ≥2，含 2:0/3:0/3:1），可提前收局并在裁决里写明理由")
 
     # 收敛警报：近期双方都在互相让步、没有新论据，说明这局已经不出东西了。
     recent = ordered[-4:]
@@ -903,6 +1007,8 @@ def main(argv=None):
     p.add_argument("--note", default="")
     p.add_argument("--pivot", default="", help="本回合自报要害：对方驳倒这一句即须认输")
     p.add_argument("--rubric", default="", help="四维评分 'A:接2,据2,洽2,认1;B:接1,据1,洽2,认2'")
+    p.add_argument("--evidence", default="",
+                   help="证据等级：verified/reasoned/to-verify/speculative（或已核/推理/待核/存疑）")
     p.add_argument("--blind", action="store_true", help="本回合为盲判（判分时未见角色名）")
     p.add_argument("--concede", default="",
                    help="本回合发言者认输，局即刻终（记角色 id）")
@@ -914,6 +1020,12 @@ def main(argv=None):
     p = sub.add_parser("status", help="看当前比分与进度")
     p.add_argument("--dir", required=True)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("brief", help="导出匿名判分视图（抹掉署名，供盲读）")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--round", type=int, default=None, help="只看某一回合，默认全部")
+    p.add_argument("--out", default="", help="写入文件；缺省打印到 stdout")
+    p.set_defaults(func=cmd_brief)
 
     p = sub.add_parser("render", help="出实录（md / html）")
     p.add_argument("--dir", required=True)
@@ -932,6 +1044,8 @@ def main(argv=None):
                    help="这是改造前记的旧档，不按要害/四维/盲判三项硬门量")
     p.add_argument("--allow-missing", action="store_true",
                    help="明知缺要害/四维/盲判仍要出档：降为提示，不拦")
+    p.add_argument("--strict-evidence", action="store_true",
+                   help="击穿证据缺失/存疑/待核时拦下（默认只提示）")
     p.set_defaults(func=cmd_check)
 
     args = ap.parse_args(argv)
